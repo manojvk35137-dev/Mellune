@@ -1,5 +1,6 @@
 
 import { useEffect, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 import {
   Home, Search, Heart, Library, Radio, Play, Pause, SkipBack, SkipForward,
   Volume2, Plus, Upload, Music2, MoonStar, Headphones, Sparkles
@@ -53,6 +54,11 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const volumeSwipeRef = useRef<{
+    y: number;
+    volume: number;
+  } | null>(null);
+
   const fetchTracks = async (search = "") => {
     setLoading(true);
     setError("");
@@ -96,7 +102,7 @@ export default function App() {
     if (searchTimer.current) clearTimeout(searchTimer.current);
 
     searchTimer.current = setTimeout(() => {
-      if (tab !== "Liked Songs") {
+      if (tab !== "Liked Songs" && tab !== "Your Library") {
         fetchTracks(query);
       }
     }, 500);
@@ -125,12 +131,12 @@ export default function App() {
       audio.removeEventListener("loadedmetadata", onDuration);
       audio.removeEventListener("ended", onEnded);
     };
-  }, [volume, current, tracks]);
+  }, [volume, current, tracks, tab, liked]);
 
   useEffect(() => {
-    if (!current || !audioRef.current) return;
-
     const audio = audioRef.current;
+    if (!current || !audio) return;
+
     audio.src = current.src;
     audio.load();
 
@@ -143,32 +149,43 @@ export default function App() {
   }, [current]);
 
   useEffect(() => {
-    if ("mediaSession" in navigator && current) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: current.title,
-        artist: current.artist,
-        album: "MELLUNE",
-        artwork: current.artwork
-          ? [{ src: current.artwork, sizes: "480x480", type: "image/jpeg" }]
-          : []
-      });
+    if (!("mediaSession" in navigator) || !current) return;
 
-      navigator.mediaSession.setActionHandler("play", () => {
-        audioRef.current?.play().then(() => setPlaying(true)).catch(() => {});
-      });
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: current.title,
+      artist: current.artist,
+      album: "MELLUNE",
+      artwork: current.artwork
+        ? [{ src: current.artwork, sizes: "480x480", type: "image/jpeg" }]
+        : []
+    });
 
-      navigator.mediaSession.setActionHandler("pause", () => {
-        audioRef.current?.pause();
-        setPlaying(false);
-      });
+    navigator.mediaSession.setActionHandler("play", () => {
+      audioRef.current?.play()
+        .then(() => setPlaying(true))
+        .catch(() => {});
+    });
 
-      navigator.mediaSession.setActionHandler("nexttrack", nextTrack);
-      navigator.mediaSession.setActionHandler("previoustrack", previousTrack);
-    }
-  }, [current, tracks]);
+    navigator.mediaSession.setActionHandler("pause", () => {
+      audioRef.current?.pause();
+      setPlaying(false);
+    });
+
+    navigator.mediaSession.setActionHandler("nexttrack", nextTrack);
+    navigator.mediaSession.setActionHandler("previoustrack", previousTrack);
+
+    return () => {
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+      navigator.mediaSession.setActionHandler("nexttrack", null);
+      navigator.mediaSession.setActionHandler("previoustrack", null);
+    };
+  }, [current, tracks, tab, liked]);
 
   const playTrack = (track: Track) => {
     setError("");
+    setProgress(0);
+    setDuration(0);
     setCurrent(track);
     setPlaying(true);
   };
@@ -190,11 +207,18 @@ export default function App() {
     }
   };
 
-  const nextTrack = () => {
-    const list = tab === "Liked Songs"
-      ? tracks.filter(t => liked.includes(t.id))
-      : tracks;
+  const getPlayList = () => {
+    if (tab === "Liked Songs") {
+      return tracks.filter(t => liked.includes(t.id));
+    }
+    if (tab === "Your Library") {
+      return myTracks;
+    }
+    return tracks;
+  };
 
+  const nextTrack = () => {
+    const list = getPlayList();
     if (!list.length) return;
 
     const index = list.findIndex(t => t.id === current?.id);
@@ -202,10 +226,7 @@ export default function App() {
   };
 
   const previousTrack = () => {
-    const list = tab === "Liked Songs"
-      ? tracks.filter(t => liked.includes(t.id))
-      : tracks;
-
+    const list = getPlayList();
     if (!list.length) return;
 
     const index = list.findIndex(t => t.id === current?.id);
@@ -225,6 +246,7 @@ export default function App() {
     };
 
     setMyTracks(old => [track, ...old]);
+    setTab("Your Library");
     playTrack(track);
   };
 
@@ -232,6 +254,31 @@ export default function App() {
     setLiked(old =>
       old.includes(id) ? old.filter(x => x !== id) : [...old, id]
     );
+  };
+
+  const handleVolumePointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    volumeSwipeRef.current = {
+      y: e.clientY,
+      volume
+    };
+
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleVolumePointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!volumeSwipeRef.current) return;
+
+    const difference = volumeSwipeRef.current.y - e.clientY;
+    const newVolume = Math.max(
+      0,
+      Math.min(1, volumeSwipeRef.current.volume + difference / 160)
+    );
+
+    setVolume(newVolume);
+  };
+
+  const handleVolumePointerUp = () => {
+    volumeSwipeRef.current = null;
   };
 
   const visibleTracks =
@@ -281,7 +328,10 @@ export default function App() {
 
         <div className="side-label playlist-label">YOUR SPACE</div>
 
-        <button className="nav-item" onClick={() => setTab("Liked Songs")}>
+        <button
+          className={`nav-item ${tab === "Liked Songs" ? "active" : ""}`}
+          onClick={() => setTab("Liked Songs")}
+        >
           <Heart size={19} /><span>Liked Songs</span>
         </button>
 
@@ -398,10 +448,13 @@ export default function App() {
               </h2>
             </div>
 
-            <button className="text-btn" onClick={() => {
-              setTab("Explore");
-              fetchTracks(query);
-            }}>
+            <button
+              className="text-btn"
+              onClick={() => {
+                setTab("Explore");
+                fetchTracks(query);
+              }}
+            >
               See all <span>↗</span>
             </button>
           </div>
@@ -445,13 +498,13 @@ export default function App() {
                 </button>
               </div>
             ))}
-
-            {!loading && !error && visibleTracks.length === 0 && (
-              <div className="empty-state">
-                No songs here yet. Search for music or explore trending tracks.
-              </div>
-            )}
           </div>
+
+          {!loading && !error && visibleTracks.length === 0 && (
+            <div className="empty-state">
+              No songs here yet. Search for music or explore trending tracks.
+            </div>
+          )}
         </section>
 
         <section className="feature-card">
@@ -534,6 +587,7 @@ export default function App() {
 
         <div className="volume">
           <Volume2 size={18} />
+
           <input
             aria-label="Volume"
             type="range"
@@ -543,6 +597,34 @@ export default function App() {
             value={volume}
             onChange={e => setVolume(Number(e.target.value))}
           />
+
+          <div
+            onPointerDown={handleVolumePointerDown}
+            onPointerMove={handleVolumePointerMove}
+            onPointerUp={handleVolumePointerUp}
+            onPointerCancel={handleVolumePointerUp}
+            style={{
+              width: "42px",
+              minWidth: "42px",
+              height: "48px",
+              borderRadius: "12px",
+              background: "rgba(190, 130, 255, 0.16)",
+              border: "1px solid rgba(190, 130, 255, 0.3)",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "3px",
+              touchAction: "none",
+              userSelect: "none",
+              cursor: "ns-resize"
+            }}
+          >
+            <Volume2 size={16} />
+            <small style={{ fontSize: "10px" }}>
+              {Math.round(volume * 100)}%
+            </small>
+          </div>
         </div>
       </div>
     </div>
